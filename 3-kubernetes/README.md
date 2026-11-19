@@ -8,122 +8,143 @@
 | [`deployment.yaml`](deployment.yaml) | Deployment `vehicle-rental`, 2 replicas, image `vehicle-rental:1.0` |
 | [`service.yaml`](service.yaml) | NodePort Service `vehicle-rental-service` on port `30080` |
 
-**Prerequisites:** Docker, `minikube` and `kubectl` installed. The app URL path is `/VehicleRentalManagement/`.
+**Prerequisites:** Docker Desktop running, plus `minikube` and `kubectl` installed. The app URL path is `/VehicleRentalManagement/`.
+
+> **Works in CMD and PowerShell.** Every command is on one line. Copy one line at a time. The "Expected" notes under each block are not commands.
 
 ---
 
 ## Step 1: Start Minikube and make the image available to the cluster
 
-```bash
+```
 minikube start --driver=docker
-minikube status                 # host, kubelet, apiserver: Running
-kubectl get nodes               # minikube   Ready   control-plane
+minikube status
+kubectl get nodes
 ```
 
-Get the app source and add the Dockerfile:
+Expected: `host`, `kubelet` and `apiserver` show `Running`, and node `minikube` shows `Ready`.
 
-```bash
+Get the app source:
+
+```
 git clone https://github.com/nikithamoturi/VehicleRentalManagementSystem.git
 cd VehicleRentalManagementSystem
-# copy Dockerfile from this folder into the repo root (next to pom.xml)
 ```
 
-Build the image **inside Minikube**. Pick any one option:
+Copy the [`Dockerfile`](Dockerfile) from this folder into that `VehicleRentalManagementSystem` folder, next to `pom.xml`. Then build the image **inside Minikube**:
 
-```bash
-# Option A (simplest): build directly in Minikube's image store
+```
 minikube image build -t vehicle-rental:1.0 .
+```
 
-# Option B: build with Docker on your machine, then load it into Minikube
+The `.` at the end matters: it means "build from the current folder". The first build takes a few minutes because Maven downloads its dependencies.
+
+If `minikube image build` gives you trouble, build with Docker Desktop and then load the image into Minikube:
+
+```
 docker build -t vehicle-rental:1.0 .
 minikube image load vehicle-rental:1.0
-
-# Option C: point your Docker CLI at Minikube's Docker daemon, then build
-eval $(minikube docker-env)                                          # Linux/macOS
-# & minikube -p minikube docker-env --shell powershell | Invoke-Expression   # Windows PowerShell
-docker build -t vehicle-rental:1.0 .
 ```
 
 Verify:
 
-```bash
-minikube image ls | grep vehicle-rental      # docker.io/library/vehicle-rental:1.0
 ```
+minikube image ls
+```
+
+Expected: the list contains `docker.io/library/vehicle-rental:1.0`. To filter the list, use `minikube image ls | findstr vehicle-rental`, which works in both CMD and PowerShell.
 
 > `imagePullPolicy: IfNotPresent` in `deployment.yaml` matters. Kubernetes uses the image already loaded into Minikube instead of trying to download `vehicle-rental` from Docker Hub, where it doesn't exist (that would cause `ErrImagePull` / `ImagePullBackOff`).
 
 ## Step 2: Create the Deployment with 2 replicas
 
-```bash
+Go back to the folder that holds `deployment.yaml` and `service.yaml` (this `03-kubernetes` folder), then:
+
+```
 kubectl apply -f deployment.yaml
-kubectl get deployments          # vehicle-rental   2/2   2   2
-kubectl get pods -o wide         # 2 pods, STATUS Running, READY 1/1
-kubectl get replicasets          # ReplicaSet created by the Deployment, DESIRED 2
+kubectl get deployments
+kubectl get pods -o wide
+kubectl get replicasets
 kubectl describe deployment vehicle-rental
 ```
+
+Expected:
+- `deployment.apps/vehicle-rental created`
+- `vehicle-rental   2/2   2   2`
+- 2 pods with STATUS `Running` and READY `1/1`
+- a ReplicaSet with DESIRED `2`
 
 Pods show `0/1 READY` for about 15–20 s while Tomcat starts. The readiness probe waits until `/VehicleRentalManagement/` responds.
 
 ## Step 3: Create the Service and open the app
 
-```bash
-kubectl apply -f service.yaml
-kubectl get services             # vehicle-rental-service   NodePort   ...   80:30080/TCP
-kubectl get endpoints vehicle-rental-service    # lists both pod IPs:8080
 ```
+kubectl apply -f service.yaml
+kubectl get services
+kubectl get endpoints vehicle-rental-service
+```
+
+Expected: `vehicle-rental-service   NodePort   ...   80:30080/TCP`, and the endpoints list shows both pod IPs on port 8080.
 
 Access the app:
 
-```bash
+```
 minikube service vehicle-rental-service --url
-# e.g. http://192.168.49.2:30080   (on Windows/macOS with the Docker driver you get
-#  a 127.0.0.1:<port> tunnel URL; keep that terminal open)
 ```
 
-Open **`<that URL>/VehicleRentalManagement/`** in the browser. You should see the Vehicle Rental Management System home page, with the login, register and vehicle pages linked.
+Expected: a URL such as `http://127.0.0.1:54321`. On Windows with the Docker driver this command opens a tunnel, so **keep that terminal window open** and run the next commands in a new one.
 
-From the command line:
-
-```bash
-curl -s $(minikube service vehicle-rental-service --url)/VehicleRentalManagement/ | grep -i "<title>"
-```
+Open **`<that URL>/VehicleRentalManagement/`** in the browser, e.g. `http://127.0.0.1:54321/VehicleRentalManagement/`. You should see the Vehicle Rental Management System home page, with the login, register and vehicle pages linked.
 
 ## Step 4: Scale from 2 to 4 replicas
 
-```bash
-kubectl scale deployment vehicle-rental --replicas=4
-kubectl get deployment vehicle-rental     # READY 4/4
-kubectl get pods -o wide                  # 4 pods: 2 old + 2 new (younger AGE)
-kubectl get endpoints vehicle-rental-service   # now 4 pod IPs behind the Service
 ```
+kubectl scale deployment vehicle-rental --replicas=4
+kubectl get deployment vehicle-rental
+kubectl get pods -o wide
+kubectl get endpoints vehicle-rental-service
+```
+
+Expected: READY `4/4`. There are 4 pods, 2 old ones and 2 new ones with a younger AGE, and the Service now has 4 pod IPs.
 
 Or declaratively: change `replicas: 2` to `replicas: 4` in `deployment.yaml` and run `kubectl apply -f deployment.yaml`.
 
 ### Optional: real auto scaling (HorizontalPodAutoscaler)
 
-```bash
+```
 minikube addons enable metrics-server
 kubectl autoscale deployment vehicle-rental --cpu-percent=50 --min=2 --max=6
-kubectl get hpa                           # TARGETS shows CPU %, REPLICAS adjusts automatically
-kubectl top pods                          # live CPU/memory per pod
+kubectl get hpa
+kubectl top pods
 ```
+
+Expected: `kubectl get hpa` shows CPU % under TARGETS, and `kubectl top pods` shows live CPU and memory per pod. Metrics take about a minute to appear.
 
 This works because `deployment.yaml` sets CPU `requests`. The HPA computes utilisation against that value.
 
 ## Step 5: Delete a pod and watch Kubernetes replace it
 
-```bash
-kubectl get pods                                  # note one pod name
-kubectl delete pod <one-of-the-pod-names>
-kubectl get pods -w                               # watch live (Ctrl+C to stop)
 ```
+kubectl get pods
+```
+
+Copy one pod name from the list (e.g. `vehicle-rental-6d8f7c9b4-abcde`), then:
+
+```
+kubectl delete pod vehicle-rental-6d8f7c9b4-abcde
+kubectl get pods -w
+```
+
+Replace the name with your real pod name. Press **Ctrl+C** to stop watching.
 
 What you'll see: the deleted pod goes `Terminating`, and a **new pod with a different name** appears almost immediately (`ContainerCreating` → `Running`). The count returns to **4/4**. The ReplicaSet saw `current (3) < desired (4)` and created a replacement.
 
-```bash
-kubectl get deployment vehicle-rental            # back to 4/4
-kubectl describe replicaset -l app=vehicle-rental | tail -10   # Events: "Created pod: vehicle-rental-xxxxx"
 ```
+kubectl get deployment vehicle-rental
+kubectl describe replicaset -l app=vehicle-rental
+```
+
+Expected: the deployment is back to `4/4`, and the **Events** at the bottom of the ReplicaSet description include `Created pod: vehicle-rental-xxxxx` for the replacement.
 
 The app stays reachable through the Service throughout, because the other pods keep serving.
 
@@ -131,25 +152,43 @@ The app stays reachable through the Service throughout, because the other pods k
 
 ## Useful extras (for Q5: rollout and rollback)
 
-```bash
-# Roll out a new version
+Roll out a new version, run from the app folder:
+
+```
 minikube image build -t vehicle-rental:2.0 .
 kubectl set image deployment/vehicle-rental vehicle-rental=vehicle-rental:2.0
 kubectl rollout status deployment/vehicle-rental
 kubectl rollout history deployment/vehicle-rental
-
-# Something broke -> go back
-kubectl rollout undo deployment/vehicle-rental                 # previous version
-kubectl rollout undo deployment/vehicle-rental --to-revision=1 # specific version
-
-# Debugging a bad pod
-kubectl describe pod <pod>      # Events: ImagePullBackOff, probe failures, OOMKilled...
-kubectl logs <pod>              # Tomcat / application logs
 ```
+
+If something broke, go back to the previous version, or to a specific revision:
+
+```
+kubectl rollout undo deployment/vehicle-rental
+kubectl rollout undo deployment/vehicle-rental --to-revision=1
+```
+
+Debugging a bad pod:
+
+```
+kubectl describe pod <pod-name>
+kubectl logs <pod-name>
+```
+
+`describe` shows Events such as `ImagePullBackOff`, probe failures and `OOMKilled`. `logs` shows the Tomcat and application output.
+
+### Common errors
+
+| Error | Fix |
+|-------|-----|
+| `ErrImagePull` / `ImagePullBackOff` | The image isn't inside Minikube. Run `minikube image build -t vehicle-rental:1.0 .` (or `docker build` plus `minikube image load`) and check `minikube image ls` |
+| Pods stuck at `0/1 READY` | Tomcat is still starting. Wait 30 s, then check `kubectl logs <pod-name>` |
+| Browser can't open the URL | Keep the `minikube service ... --url` window open, and add `/VehicleRentalManagement/` to the end of the URL |
+| `minikube start` fails | Make sure Docker Desktop is running first |
 
 ### Cleanup
 
-```bash
+```
 kubectl delete -f service.yaml -f deployment.yaml
 minikube stop
 ```
