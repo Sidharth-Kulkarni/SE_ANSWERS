@@ -1,221 +1,161 @@
-# 3. Kubernetes: Container Deployment and Auto Scaling (Minikube)
+# 1. Docker: Multi-Container Application (WordPress + MySQL)
 
-**Goal:** Run the Vehicle Rental Management app on Minikube as a **Deployment** with 2 replicas, expose it with a **Service**, scale it to 4 replicas, and show that Kubernetes **self-heals** by replacing a deleted pod.
+**Goal:** WordPress (frontend) and MySQL (backend) run as two containers on one user-defined Docker network. MySQL data sits in a named volume, so it survives container restarts and replacement.
 
-| File | Purpose |
-|------|---------|
-| [`Dockerfile`](Dockerfile) | Builds the app image (Maven build → Tomcat 9) |
-| [`deployment.yaml`](deployment.yaml) | Deployment `vehicle-rental`, 2 replicas, image `vehicle-rental:1.0` |
-| [`service.yaml`](service.yaml) | NodePort Service `vehicle-rental-service` on port `30080` |
+Names used throughout:
 
-**Prerequisites:** Docker Desktop running, plus `minikube` and `kubectl` installed. The app URL path is `/VehicleRentalManagement/`.
+| Thing | Name |
+|-------|------|
+| Network | `vr-net` |
+| MySQL container | `vr-mysql` |
+| WordPress container | `vr-wordpress` |
+| DB volume | `vr-db-data` |
+| WP files volume (optional) | `vr-wp-data` |
+| Database / user / password | `vehiclerental_db` / `vruser` / `vrpass123` |
+| MySQL root password | `rootpass123` |
+
+All the commands are also in [`commands.bat`](commands.bat). Double-click it or run `commands.bat` in CMD.
 
 > **Works in CMD and PowerShell.** Every command is on one line. Copy one line at a time. The "Expected" notes under each block are not commands.
 
 ---
 
-## Step 1: Start Minikube and make the image available to the cluster
+## Step 1: Download the official images
 
 ```
-minikube start --driver=docker
-minikube status
-kubectl get nodes
+docker pull mysql:8.0
+docker pull wordpress:latest
+docker images
 ```
 
-Expected: `host`, `kubelet` and `apiserver` show `Running`, and node `minikube` shows `Ready`.
+Expected: `mysql 8.0` and `wordpress latest` appear in the list.
 
-Get the app source:
-
-```
-git clone https://github.com/nikithamoturi/VehicleRentalManagementSystem.git
-cd VehicleRentalManagementSystem
-```
-
-Copy the [`Dockerfile`](Dockerfile) from this folder into that `VehicleRentalManagementSystem` folder, next to `pom.xml`. Then build the image **inside Minikube**:
+## Step 2: Create a dedicated network
 
 ```
-minikube image build -t vehicle-rental:1.0 .
+docker network create vr-net
+docker network ls
 ```
 
-The `.` at the end matters: it means "build from the current folder". The first build takes a few minutes because Maven downloads its dependencies.
+Expected: `vr-net` with driver `bridge`.
 
-If `minikube image build` gives you trouble, build with Docker Desktop and then load the image into Minikube:
+A user-defined bridge network gives the containers **built-in DNS**, so WordPress can reach MySQL by the name `vr-mysql`. The default `bridge` network doesn't do this.
 
-```
-docker build -t vehicle-rental:1.0 .
-minikube image load vehicle-rental:1.0
-```
-
-Verify:
+## Step 3: Run MySQL with a database, a user and a named volume
 
 ```
-minikube image ls
+docker volume create vr-db-data
+docker run -d --name vr-mysql --network vr-net -e MYSQL_ROOT_PASSWORD=rootpass123 -e MYSQL_DATABASE=vehiclerental_db -e MYSQL_USER=vruser -e MYSQL_PASSWORD=vrpass123 -v vr-db-data:/var/lib/mysql --restart unless-stopped mysql:8.0
 ```
 
-Expected: the list contains `docker.io/library/vehicle-rental:1.0`. To filter the list, use `minikube image ls | findstr vehicle-rental`, which works in both CMD and PowerShell.
+- `-v vr-db-data:/var/lib/mysql`: `/var/lib/mysql` is where MySQL keeps its data files. Mounting the named volume there makes the data persistent.
+- No `-p` flag is needed. Only WordPress talks to MySQL, and it does so over `vr-net`.
 
-> `imagePullPolicy: IfNotPresent` in `deployment.yaml` matters. Kubernetes uses the image already loaded into Minikube instead of trying to download `vehicle-rental` from Docker Hub, where it doesn't exist (that would cause `ErrImagePull` / `ImagePullBackOff`).
-
-## Step 2: Create the Deployment with 2 replicas
-
-Go back to the folder that holds `deployment.yaml` and `service.yaml` (this `03-kubernetes` folder), then:
+Wait until MySQL is ready before starting WordPress:
 
 ```
-kubectl apply -f deployment.yaml
-kubectl get deployments
-kubectl get pods -o wide
-kubectl get replicasets
-kubectl describe deployment vehicle-rental
+docker logs -f vr-mysql
+```
+
+Expected: wait for a line containing `ready for connections` ... `port: 3306`, then press **Ctrl+C**. A first `ready for connections ... port: 0` line is MySQL's temporary setup server, so keep waiting for the `port: 3306` one.
+
+## Step 4: Run WordPress on the same network
+
+```
+docker volume create vr-wp-data
+docker run -d --name vr-wordpress --network vr-net -e WORDPRESS_DB_HOST=vr-mysql:3306 -e WORDPRESS_DB_NAME=vehiclerental_db -e WORDPRESS_DB_USER=vruser -e WORDPRESS_DB_PASSWORD=vrpass123 -v vr-wp-data:/var/www/html -p 8080:80 --restart unless-stopped wordpress:latest
+```
+
+- `WORDPRESS_DB_HOST=vr-mysql`: the **container name** of MySQL, resolved by Docker DNS.
+- `WORDPRESS_DB_NAME`, `WORDPRESS_DB_USER` and `WORDPRESS_DB_PASSWORD` **must match** the `MYSQL_*` values from Step 3.
+- `-p 8080:80`: host port 8080 maps to Apache's port 80 inside the container.
+- `-v vr-wp-data:/var/www/html` (optional) also keeps themes, plugins and uploads.
+
+## Step 5: Use the portal and verify with Docker commands
+
+1. Open **http://localhost:8080**.
+2. Finish the WordPress install wizard: pick a language, then enter a Site Title ("Vehicle Rental Portal"), an admin username, a password and an email.
+3. Log in at `http://localhost:8080/wp-admin` and add sample content, for example:
+   - **Page "Vehicle Categories":** Hatchback (₹1,200/day), Sedan (₹1,800/day), SUV (₹2,500/day), Bikes (₹500/day)
+   - **Page "Rental Locations":** Narayanguda, Ameerpet, Gachibowli, Hyderabad Airport
+   - **Page "Rental Policies":** Valid driving licence required, ₹5,000 refundable deposit, fuel-to-fuel policy, free cancellation up to 24 h before pickup
+   - **Page "Contact Us":** phone, email, office address
+4. Check the containers and their logs:
+
+```
+docker ps
+docker ps -a --filter "name=vr-"
+docker inspect -f "{{.Name}} {{.State.Status}}" vr-mysql vr-wordpress
+docker logs --tail 20 vr-mysql
+docker logs --tail 20 vr-wordpress
+docker network inspect vr-net
+docker volume inspect vr-db-data
 ```
 
 Expected:
-- `deployment.apps/vehicle-rental created`
-- `vehicle-rental   2/2   2   2`
-- 2 pods with STATUS `Running` and READY `1/1`
-- a ReplicaSet with DESIRED `2`
+- `docker ps`: both containers show `Up`
+- `docker inspect`: `/vr-mysql running` and `/vr-wordpress running`
+- MySQL logs: `ready for connections`
+- WordPress logs: Apache started, with `GET /` requests from your browser
+- `network inspect`: both containers listed under `Containers`
+- `volume inspect`: the `Mountpoint` where the data is stored
 
-Pods show `0/1 READY` for about 15–20 s while Tomcat starts. The readiness probe waits until `/VehicleRentalManagement/` responds.
-
-## Step 3: Create the Service and open the app
-
-```
-kubectl apply -f service.yaml
-kubectl get services
-kubectl get endpoints vehicle-rental-service
-```
-
-Expected: `vehicle-rental-service   NodePort   ...   80:30080/TCP`, and the endpoints list shows both pod IPs on port 8080.
-
-Access the app:
+Optional: confirm WordPress tables exist in MySQL:
 
 ```
-minikube service vehicle-rental-service --url
+docker exec -it vr-mysql mysql -uvruser -pvrpass123 -e "USE vehiclerental_db; SHOW TABLES;"
 ```
 
-Expected: a URL such as `http://127.0.0.1:54321`. On Windows with the Docker driver this command opens a tunnel, so **keep that terminal window open** and run the next commands in a new one.
+Expected: `wp_posts`, `wp_options`, `wp_users` and other WordPress tables.
 
-Open **`<that URL>/VehicleRentalManagement/`** in the browser, e.g. `http://127.0.0.1:54321/VehicleRentalManagement/`. You should see the Vehicle Rental Management System home page, with the login, register and vehicle pages linked.
+### Proving persistence (good to demo)
 
-## Step 4: Scale from 2 to 4 replicas
-
-```
-kubectl scale deployment vehicle-rental --replicas=4
-kubectl get deployment vehicle-rental
-kubectl get pods -o wide
-kubectl get endpoints vehicle-rental-service
-```
-
-Expected: READY `4/4`. There are 4 pods, 2 old ones and 2 new ones with a younger AGE, and the Service now has 4 pod IPs.
-
-Or declaratively: change `replicas: 2` to `replicas: 4` in `deployment.yaml` and run `kubectl apply -f deployment.yaml`.
-
-### Optional: real auto scaling (HorizontalPodAutoscaler)
+Delete the MySQL container, then create a brand-new one using the same volume:
 
 ```
-minikube addons enable metrics-server
-kubectl autoscale deployment vehicle-rental --cpu-percent=50 --min=2 --max=6
-kubectl get hpa
-kubectl top pods
+docker rm -f vr-mysql
+docker run -d --name vr-mysql --network vr-net -e MYSQL_ROOT_PASSWORD=rootpass123 -e MYSQL_DATABASE=vehiclerental_db -e MYSQL_USER=vruser -e MYSQL_PASSWORD=vrpass123 -v vr-db-data:/var/lib/mysql --restart unless-stopped mysql:8.0
 ```
 
-Expected: `kubectl get hpa` shows CPU % under TARGETS, and `kubectl top pods` shows live CPU and memory per pod. Metrics take about a minute to appear.
-
-This works because `deployment.yaml` sets CPU `requests`. The HPA computes utilisation against that value.
-
-## Step 5: Delete a pod and watch Kubernetes replace it
-
-```
-kubectl get pods
-```
-
-Copy one pod name from the list (e.g. `vehicle-rental-6d8f7c9b4-abcde`), then:
-
-```
-kubectl delete pod vehicle-rental-6d8f7c9b4-abcde
-kubectl get pods -w
-```
-
-Replace the name with your real pod name. Press **Ctrl+C** to stop watching.
-
-What you'll see: the deleted pod goes `Terminating`, and a **new pod with a different name** appears almost immediately (`ContainerCreating` → `Running`). The count returns to **4/4**. The ReplicaSet saw `current (3) < desired (4)` and created a replacement.
-
-```
-kubectl get deployment vehicle-rental
-kubectl describe replicaset -l app=vehicle-rental
-```
-
-Expected: the deployment is back to `4/4`, and the **Events** at the bottom of the ReplicaSet description include `Created pod: vehicle-rental-xxxxx` for the replacement.
-
-The app stays reachable through the Service throughout, because the other pods keep serving.
-
----
-
-## Useful extras (for Q5: rollout and rollback)
-
-Roll out a new version, run from the app folder:
-
-```
-minikube image build -t vehicle-rental:2.0 .
-kubectl set image deployment/vehicle-rental vehicle-rental=vehicle-rental:2.0
-kubectl rollout status deployment/vehicle-rental
-kubectl rollout history deployment/vehicle-rental
-```
-
-If something broke, go back to the previous version, or to a specific revision:
-
-```
-kubectl rollout undo deployment/vehicle-rental
-kubectl rollout undo deployment/vehicle-rental --to-revision=1
-```
-
-Debugging a bad pod:
-
-```
-kubectl describe pod <pod-name>
-kubectl logs <pod-name>
-```
-
-`describe` shows Events such as `ImagePullBackOff`, probe failures and `OOMKilled`. `logs` shows the Tomcat and application output.
+Wait a few seconds and refresh http://localhost:8080. All your pages are still there.
 
 ### Common errors
 
 | Error | Fix |
 |-------|-----|
-| `ErrImagePull` / `ImagePullBackOff` | The image isn't inside Minikube. Run `minikube image build -t vehicle-rental:1.0 .` (or `docker build` plus `minikube image load`) and check `minikube image ls` |
-| Pods stuck at `0/1 READY` | Tomcat is still starting. Wait 30 s, then check `kubectl logs <pod-name>` |
-| Browser can't open the URL | Keep the `minikube service ... --url` window open, and add `/VehicleRentalManagement/` to the end of the URL |
-| `minikube start` fails | Make sure Docker Desktop is running first |
+| `network vr-net not found` | Run `docker network create vr-net` first |
+| `container name "/vr-mysql" is already in use` | `docker rm -f vr-mysql`, then run again |
+| `port is already allocated` | Use another host port, e.g. `-p 8081:80` |
+| Browser shows "Error establishing a database connection" | MySQL isn't ready yet. Wait, then `docker restart vr-wordpress` |
+| `'--name' is not recognized...` | You pasted a multi-line command. Use the one-line versions above |
 
 ### Cleanup
 
 ```
-kubectl delete -f service.yaml -f deployment.yaml
-minikube stop
+docker rm -f vr-wordpress vr-mysql
+docker network rm vr-net
+docker volume rm vr-db-data vr-wp-data
 ```
+
+The last command deletes the data, so only run it if you mean to.
+
+> **Alternative:** [`docker-compose.yml`](docker-compose.yml) does the same thing in one file (`docker compose up -d`). The lab asks for the individual steps, so show the `docker run` approach in the exam.
 
 ---
 
 ## Scenario-based Questions
 
-**Q1. How does Kubernetes help keep the rental portal available when an application pod terminates?**
-The Deployment creates a **ReplicaSet** that keeps the declared number of pods running. Its controller continuously compares the *desired* state (e.g. 4 replicas) with the *actual* state. When a pod crashes, is deleted, or its node fails, the actual count drops, and Kubernetes immediately schedules a **replacement pod**. Meanwhile the **Service** routes customers only to the remaining healthy pods. The readiness probe stops traffic to pods that aren't ready, and the liveness probe restarts containers that hang. Customers keep using the portal with no visible outage. This is shown in Step 5.
+**Q1. What problem may occur if the WordPress container starts before the MySQL service is ready?**
+MySQL needs several seconds on first start to initialise its data directory and create the database and user. If WordPress starts first, its connection attempts fail and the browser shows **"Error establishing a database connection."** The WordPress logs may also show `MySQL Connection Error: (2002) Connection refused`. A container being "running" does not mean the service inside it is "ready". The fix is to start MySQL first and wait for `ready for connections` in `docker logs`. You can also restart WordPress with `docker restart vr-wordpress`, give it `--restart unless-stopped`, or in Compose add a MySQL `healthcheck` with `depends_on: condition: service_healthy`.
 
-**Q2. What is the purpose of specifying a replica count in a Deployment?**
-`replicas` declares how many identical copies of the application pod must run at all times. It provides:
-- **High availability:** if one pod fails, others keep serving
-- **Load distribution:** the Service spreads customer requests across all replicas
-- **Self-healing target:** the ReplicaSet always restores this exact number
-- **Easy scaling:** change the number with `kubectl scale` or in the YAML, and Kubernetes adds or removes pods to match
+**Q2. How can WordPress connect to the MySQL container by using its container name instead of a changing IP address?**
+Both containers are attached to the same **user-defined network** (`vr-net`). Docker runs an embedded DNS server (127.0.0.11) on such networks, and it resolves each container's **name** to its current IP. Setting `WORDPRESS_DB_HOST=vr-mysql:3306` therefore keeps working even when MySQL is recreated and gets a new IP. The default `bridge` network has no name resolution, which is why a dedicated network is created.
 
-**Q3. Why may the company need to scale the rental portal during holiday seasons?**
-During holidays and weekends many more customers search for vehicles and submit rental requests at the same time. With only 2 pods, CPU and memory saturate, responses slow down, requests time out and bookings, and so revenue, are lost. Scaling to 4 or more replicas adds capacity so the load is shared and response times stay low. After the peak the deployment can be scaled back down to save resources and cost. A **HorizontalPodAutoscaler** does this automatically based on CPU usage (`kubectl autoscale ... --min=2 --max=6 --cpu-percent=50`).
+**Q3. Why must the database name and login credentials configured for WordPress match those configured in MySQL?**
+`MYSQL_DATABASE`, `MYSQL_USER` and `MYSQL_PASSWORD` tell MySQL which database and account to create, and grant that user rights only on that database. WordPress writes its `WORDPRESS_DB_*` values into `wp-config.php` and uses them to log in. A wrong user or password gives *Access denied for user*. A wrong database name gives *Unknown database*, or the user has no privileges on it. Either way WordPress shows the database connection error and can't store pages.
 
-**Q4. How does a Service provide a stable access point when pod IP addresses change?**
-Pods are temporary: every replacement or new replica gets a new IP address. A **Service** gets a fixed **ClusterIP** and a DNS name (`vehicle-rental-service`), and for NodePort also a fixed node port (`30080`), which never change. It doesn't point at IPs directly. It uses a **label selector** (`app: vehicle-rental`), and Kubernetes keeps its **Endpoints** list updated with the IPs of all ready pods matching that label. Clients always use the same Service address, and kube-proxy load-balances each request to one of the current pods, whatever their IPs are now. This is visible with `kubectl get endpoints`.
+**Q4. What change would you make if the selected host port for the WordPress website is already being used by another application?**
+Docker refuses to start the container with `Bind for 0.0.0.0:8080 failed: port is already allocated`. Change only the **host** side of the mapping and keep the container side at 80: `docker rm -f vr-wordpress`, then rerun with e.g. `-p 8081:80` and open `http://localhost:8081`. You can find what holds the port with `netstat -ano | findstr :8080` on Windows (the last column is the PID, which you can look up in Task Manager), or with `docker ps` if it's another container. If WordPress was already installed under the old port, also update **Settings → General → Site URL**, because WordPress stores its URL in the database.
 
-**Q5. What steps can be taken if the latest application image introduces an error after deployment?**
-1. **Detect:** `kubectl rollout status`, `kubectl get pods` (look for `CrashLoopBackOff`, `ImagePullBackOff`, `0/1 READY`), `kubectl describe pod` and `kubectl logs <pod>`.
-2. **Limit the damage:** a RollingUpdate with readiness probes doesn't replace old healthy pods until new ones become ready, so a badly broken image often stalls without taking the site down. `kubectl rollout pause deployment/vehicle-rental` stops further rollout.
-3. **Roll back:** `kubectl rollout undo deployment/vehicle-rental` (or `--to-revision=N` from `kubectl rollout history`). Alternatively `kubectl set image deployment/vehicle-rental vehicle-rental=vehicle-rental:1.0` to the last known good tag.
-4. **Verify:** `kubectl rollout status` and open the app through the Service.
-5. **Fix and redeploy:** fix the bug, build and test a new image with a **new version tag** (never overwrite tags or rely on `latest`), then roll it out again. Ideally test in CI/staging first.
+**Q5. How do named volumes help the company retain portal information when the database container is replaced?**
+A container's writable layer is deleted together with the container. A **named volume** (`vr-db-data`) is managed by Docker separately from any container (under `/var/lib/docker/volumes/`). MySQL's data directory `/var/lib/mysql` is mounted on that volume, so all tables (pages, posts, users, settings) are written outside the container. When the container is removed, upgraded (e.g. new `mysql:8.0` image) or recreated, the new container mounts the same volume and finds all the data intact. The data is only lost if someone explicitly runs `docker volume rm`.
