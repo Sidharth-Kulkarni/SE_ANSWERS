@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vehicle-rental
+  labels:
+    app: vehicle-rental
+spec:
+  replicas: 2                      # two copies of the rental web app
+  selector:
+    matchLabels:
+      app: vehicle-rental
+  strategy:
+    type: RollingUpdate            # update pods gradually, no downtime
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: vehicle-rental
+    spec:
+      containers:
+        - name: vehicle-rental
+          image: vehicle-rental:1.0
+          imagePullPolicy: IfNotPresent   # use the image loaded into Minikube; don't pull from Docker Hub
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:                 # send traffic only when Tomcat is serving the app
+            httpGet:
+              path: /VehicleRentalManagement/
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          livenessProbe:                  # restart the container if it stops responding
+            httpGet:
+              path: /VehicleRentalManagement/
+              port: 8080
+            initialDelaySeconds: 40
+            periodSeconds: 10
