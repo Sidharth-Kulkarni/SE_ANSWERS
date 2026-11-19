@@ -1,0 +1,47 @@
+# Optional alternative to the manual docker run steps.
+# Usage: docker compose up -d   |   docker compose ps   |   docker compose logs
+services:
+  vr-mysql:
+    image: mysql:8.0
+    container_name: vr-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass123
+      MYSQL_DATABASE: vehiclerental_db
+      MYSQL_USER: vruser
+      MYSQL_PASSWORD: vrpass123
+    volumes:
+      - vr-db-data:/var/lib/mysql
+    networks:
+      - vr-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-prootpass123"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  vr-wordpress:
+    image: wordpress:latest
+    container_name: vr-wordpress
+    restart: unless-stopped
+    depends_on:
+      vr-mysql:
+        condition: service_healthy   # fixes the "WordPress starts before MySQL" problem
+    environment:
+      WORDPRESS_DB_HOST: vr-mysql:3306
+      WORDPRESS_DB_NAME: vehiclerental_db
+      WORDPRESS_DB_USER: vruser
+      WORDPRESS_DB_PASSWORD: vrpass123
+    volumes:
+      - vr-wp-data:/var/www/html
+    ports:
+      - "8080:80"
+    networks:
+      - vr-net
+
+networks:
+  vr-net:
+
+volumes:
+  vr-db-data:
+  vr-wp-data:
